@@ -1,0 +1,91 @@
+service: 'lambda-video-converter'
+
+provider:
+  name: aws
+  stage: ${opt:stage, 'dev'}
+  stackName: '${self:service}'
+  region: ${opt:region, 'us-east-1'}
+  runtime: 'python3.8'
+  environment:
+    S3_BUCKET: ${self:custom.S3_BUCKET}
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - 's3:GetObject'
+        - 's3:PutObject'
+        # - 's3:DeleteObject'
+      Resource: arn:aws:s3:::${self:custom.S3_BUCKET}/*
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  S3_BUCKET: 'lambda-video-converter'
+  pythonRequirements:
+    dockerizePip: true
+    useDownloadCache: true
+    useStaticCache: true
+    layer: true
+
+functions:
+  VideoProcessor:
+    handler: functions/video_processor.handler      
+    package:
+      individually: true
+      exclude:
+        - layers/**
+        - __pycache__/**
+      include:
+        - functions/**
+      
+    description:
+      'Process video using FFMPEG'
+    runtime:
+      'python3.8'
+    maximumRetryAttempts: 0
+    memorySize: 1024
+    timeout: 900
+    ephemeralStorageSize: 1024
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+      - arn:aws:lambda:${aws:region}:${aws:accountId}:layer:ffmpeg-layer:1
+
+
+resources:
+  Resources:
+    VideoProcessorLambdaPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName:
+          'Fn::GetAtt':
+                  - VideoProcessorLambdaFunction
+                  - Arn
+        Action: 'lambda:InvokeFunction'
+        Principal: 's3.amazonaws.com'
+        SourceArn: arn:aws:s3:::${self:custom.S3_BUCKET}
+
+    FeaturedVideoBucket:
+      Type: AWS::S3::Bucket
+      # DeletionPolicy: Retain
+      DependsOn:
+        - VideoProcessorLambdaFunction
+      Properties:
+        BucketName: ${self:custom.S3_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: 's3:ObjectCreated:*'
+              Filter:
+                S3Key:
+                  Rules:
+                    - Name: prefix
+                      Value: 'upload/'
+              Function:
+                'Fn::GetAtt':
+                  - VideoProcessorLambdaFunction
+                  - Arn
